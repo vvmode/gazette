@@ -94,16 +94,19 @@ export async function fetchScrapedPosts() {
     })),
   ];
 
+  // Run concurrently - sequential requests (even with a small delay between
+  // each) add up past serverless function timeout limits once there are a
+  // dozen-plus queries.
+  const results = await Promise.all(requests.map(({ url, source }) => fetchListing(url, source)));
+
   const byId = new Map();
-  for (const { url, source } of requests) {
-    const posts = await fetchListing(url, source);
+  for (const posts of results) {
     for (const post of posts) {
-      // First source to find an id wins its source tag - the job-category
-      // URL is requested first, so a post matching both stays labeled "job".
+      // First source in `requests` order wins the source tag if an id shows
+      // up in more than one result set - the job-category URL is first, so
+      // a post matching both stays labeled "job".
       if (!byId.has(post.iulaan_id)) byId.set(post.iulaan_id, post);
     }
-    // Be polite to the site between requests.
-    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   return [...byId.values()];
