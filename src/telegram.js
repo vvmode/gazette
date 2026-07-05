@@ -1,11 +1,13 @@
-export async function sendTelegramMessage(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+function getChatIds() {
+  const raw = process.env.TELEGRAM_CHAT_ID;
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
 
-  if (!token || !chatId) {
-    throw new Error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set in .env");
-  }
-
+async function sendToChat(token, chatId, text) {
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -18,6 +20,19 @@ export async function sendTelegramMessage(text) {
   });
 
   if (!res.ok) {
-    throw new Error(`Telegram send failed: ${res.status} ${await res.text()}`);
+    throw new Error(`Telegram send failed for chat ${chatId}: ${res.status} ${await res.text()}`);
+  }
+}
+
+export async function sendTelegramMessage(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatIds = getChatIds();
+
+  if (!token || chatIds.length === 0) {
+    throw new Error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set in .env");
+  }
+
+  for (const chatId of chatIds) {
+    await sendToChat(token, chatId, text);
   }
 }

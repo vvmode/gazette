@@ -1,35 +1,67 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import path from "node:path";
+import pg from "pg";
 
-const DATA_DIR = path.resolve("data");
-const SEEN_FILE = path.join(DATA_DIR, "seen-ids.json");
+const { Pool } = pg;
+
+let pool;
+let ensureTablePromise;
+
+function getPool() {
+  if (!pool) {
+    const connectionString = process.env.DATABASE_URL || process.env.NETLIFY_DATABASE_URL;
+    if (!connectionString) {
+      throw new Error("DATABASE_URL (or NETLIFY_DATABASE_URL) is not set");
+    }
+    // One-shot invocations (local script or a scheduled function run) only
+    // ever need a single connection at a time.
+    pool = new Pool({ connectionString, max: 1 });
+  }
+  return pool;
+}
+
+export async function closeStore() {
+  if (pool) {
+    await pool.end();
+    pool = undefined;
+    ensureTablePromise = undefined;
+  }
+}
+
+async function ensureTable() {
+  if (!ensureTablePromise) {
+    ensureTablePromise = getPool().query(`
+      CREATE TABLE IF NOT EXISTS seen_posts (
+        iulaan_id TEXT PRIMARY KEY,
+        seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+  }
+  await ensureTablePromise;
+}
 
 function idOf(post) {
   return String(post.iulaan_id ?? post.id);
 }
 
-async function readSeenIds() {
-  try {
-    const raw = await readFile(SEEN_FILE, "utf-8");
-    return new Set(JSON.parse(raw));
-  } catch (err) {
-    if (err.code === "ENOENT") return new Set();
-    throw err;
-  }
-}
-
-async function writeSeenIds(idSet) {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(SEEN_FILE, JSON.stringify([...idSet]), "utf-8");
-}
-
 export async function filterUnseen(posts) {
-  const seen = await readSeenIds();
+  if (posts.length === 0) return [];
+  await ensureTable();
+
+  const ids = posts.map(idOf);
+  const { rows } = await getPool().query("SELECT iulaan_id FROM seen_posts WHERE iulaan_id = ANY($1)", [ids]);
+  const seen = new Set(rows.map((r) => r.iulaan_id));
+
   return posts.filter((post) => !seen.has(idOf(post)));
 }
 
 export async function markSeen(posts) {
-  const seen = await readSeenIds();
-  for (const post of posts) seen.add(idOf(post));
-  await writeSeenIds(seen);
+  if (posts.length === 0) return;
+  await ensureTable();
+
+  const ids = posts.map(idOf);
+  await getPool().query(
+    `INSERT INTO seen_posts (iulaan_id)
+     SELECT * FROM unnest($1::text[])
+     ON CONFLICT (iulaan_id) DO NOTHING`,
+    [ids],
+  );
 }

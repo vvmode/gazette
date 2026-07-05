@@ -4,4 +4,4 @@
 node_modules/
 vendor/
 /storage/*.key
-/data/
+.netlify/
