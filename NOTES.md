@@ -163,39 +163,49 @@ Manage it via Windows Task Scheduler GUI, or:
 Runs only while this Windows user is logged in (`LogonType: Interactive`) —
 it does not run if the machine is fully logged out, only if locked/idle.
 
-## Deploying to Netlify (cloud, runs without your PC on)
+## Deployed to Netlify (cloud, runs without your PC on)
 
-Code for this already exists: `netlify/functions/gazette-watch.js` (a
-`schedule("@hourly", ...)` function from `@netlify/functions`, calling the
-same `src/run.js` used locally) and `netlify.toml` (points Netlify at the
-`netlify/functions` directory). Repo is already pushed to
-`https://github.com/vvmode/gazette`.
+**Live.** Site: `gazettemv` (`https://gazettemv.netlify.app`), deployed from
+`https://github.com/vvmode/gazette` (`main` branch, auto-deploys on push).
+`netlify/functions/gazette-watch.js` is a `schedule("@hourly", ...)` function
+from `@netlify/functions` calling the same `src/run.js` used locally;
+`netlify.toml` points Netlify at the `netlify/functions` directory. Netlify
+confirmed `Scheduling functions: gazette-watch` on deploy, so it's running
+hourly in the cloud now.
 
-To finish deploying (requires the Netlify dashboard/CLI, not doable from
-here):
-1. In Netlify, create a new site from the `vvmode/gazette` GitHub repo (or
-   `netlify init` from this folder if using the CLI).
-2. Link the site to the Netlify Database that already provides the
-   `DATABASE_URL` in use locally — per Netlify's own message, functions on a
-   linked site get `NETLIFY_DATABASE_URL` injected automatically, so
-   `src/store.js` (which checks `DATABASE_URL || NETLIFY_DATABASE_URL`) needs
-   no extra config for this one.
-3. In Site settings → Environment variables, set: `GAZETTE_API_BASE_URL`,
-   `GAZETTE_CLIENT_ID`, `GAZETTE_CLIENT_SECRET`, `TELEGRAM_BOT_TOKEN`,
-   `TELEGRAM_CHAT_ID` (same values as local `.env`).
-4. Deploy. Netlify auto-detects the `schedule()`-wrapped function and runs it
-   hourly (cron `@hourly`) — no manual cron setup needed, unlike Task
-   Scheduler.
-5. Run the seed step once against production before relying on it, so the
-   first live run doesn't re-notify about everything currently open: either
-   trigger the function once manually from the Netlify UI after temporarily
-   changing it to call `run({ seed: true })`, or just run `npm run seed`
-   locally with production's env vars (it writes to the same shared Postgres
-   table regardless of where it runs from).
+Environment variables set in Netlify (Site settings → Environment variables,
+all scope "All scopes", same value for all deploy contexts):
+`GAZETTE_API_BASE_URL`, `GAZETTE_CLIENT_ID`, `GAZETTE_CLIENT_SECRET`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `DATABASE_URL`.
+
+Note on `DATABASE_URL`: the site *is* linked to a Netlify Database (confirmed
+by "No pending database migrations" / "Database snapshot created" in the
+build log), but the auto-injected `NETLIFY_DATABASE_URL` wasn't actually
+reaching the function at runtime for this site — first deploy failed with
+`DATABASE_URL (or NETLIFY_DATABASE_URL) is not set`. Fix was to just add
+`DATABASE_URL` manually as a regular env var with the same Postgres
+connection string used locally. `src/store.js` checks
+`DATABASE_URL || NETLIFY_DATABASE_URL`, so this works regardless of why the
+auto-injection didn't apply here.
+
+Note on timeouts: the first deploy also hit `502`/`499` errors on every
+invocation (visible in the Functions log as long-running, ~15-40s requests
+that never returned in time). Cause: `src/scraper.js` was firing its ~13
+requests **sequentially** with a 500ms politeness delay between each,
+totaling 20-30+ seconds — too slow for Netlify's function gateway. Fixed by
+running them concurrently with `Promise.all` (see `fetchScrapedPosts` in
+`src/scraper.js`), which cut total run time to ~12-16s. Verified working via
+manual invoke: `curl https://gazettemv.netlify.app/.netlify/functions/gazette-watch`
+returns `200` with a JSON summary (`{source, total, notified, message}`) in
+about 15s.
+
+Was already seeded from local runs against the same shared Postgres table
+before going live, so the first real cloud invocation correctly reported
+0 new posts instead of re-notifying about everything currently open.
 
 Since local Task Scheduler and Netlify both write to the same Postgres
 `seen_posts` table, running both at once is safe (not double-notifying) —
-but there's no reason to run both long-term. Recommended: use Netlify as the
-primary once deployed, and disable the Task Scheduler job
-(`Disable-ScheduledTask -TaskName 'GazetteITWatch'`) to avoid duplicate
-scrape traffic against the Gazette site.
+but there's no reason to run both long-term. Netlify is now primary; the
+Task Scheduler job can be disabled with
+`Disable-ScheduledTask -TaskName 'GazetteITWatch'` to avoid duplicate scrape
+traffic against the Gazette site.
