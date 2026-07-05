@@ -1,0 +1,15 @@
+{
+  "name": "gazette-it-watch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Checks gazette.gov.mv for new IT/software/dev related postings and notifies via Telegram.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "seed": "node index.js --seed"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  }
+}
