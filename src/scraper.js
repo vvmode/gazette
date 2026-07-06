@@ -72,7 +72,7 @@ function parseListing(html, source) {
 // This is just a safety net for a genuinely hung socket - the real ceiling
 // on total batch time is GLOBAL_DEADLINE_MS below, which is what actually
 // needs to stay under Netlify's scheduled-invocation limit.
-const REQUEST_TIMEOUT_MS = 12_000;
+const REQUEST_TIMEOUT_MS = 14_000;
 
 async function fetchListing(url, source) {
   const controller = new AbortController();
@@ -100,7 +100,7 @@ async function fetchListing(url, source) {
 // whatever queries have finished so far. A query that misses this run's
 // window gets retried next run - nothing is marked "seen" until it's
 // actually fetched, so no post can be silently skipped, only delayed.
-const GLOBAL_DEADLINE_MS = 8_000;
+const GLOBAL_DEADLINE_MS = 12_000;
 
 export async function fetchScrapedPosts() {
   const requests = [
