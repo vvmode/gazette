@@ -2,7 +2,16 @@ const BASE_URL = "https://www.gazette.gov.mv";
 
 // Site-side search catches both job postings and tenders/RFPs mentioning
 // these terms, in any language mix (titles are often English even on the
-// Dhivehi site). Kept short to avoid hammering the site each run.
+// Dhivehi site).
+//
+// One keyword per run, not all of them at once: firing all ~12 concurrently
+// pushed total scrape time close enough to Netlify's scheduled-invocation
+// ceiling (~15s) to cause frequent timeouts. Instead each run only searches
+// one keyword (see currentSearchQuery below), rotating to the next one every
+// ROTATION_MS - full coverage still happens, just spread over 2 hours
+// instead of packed into one run. The job-category URL below is NOT part of
+// this rotation - it runs every time since it's the near-zero-false-positive
+// primary source.
 const SEARCH_QUERIES = [
   "software",
   "developer",
@@ -15,7 +24,7 @@ const SEARCH_QUERIES = [
   // procurement rather than software.
   // "ސޮފްޓްވެއަރ" dropped - it's a superset match of "ސޮފްޓްވެއަ" below (any
   // title containing the former also contains the latter as a substring), so
-  // searching the shorter form alone already covers both and saves a request.
+  // searching the shorter form alone already covers both and saves a slot.
   "ސޮފްޓްވެއަ", // software
   "ވެބްސައިޓް", // website (spelling 1)
   "ވެބްސައިޓު", // website (spelling 2, catches different posts than spelling 1)
@@ -27,6 +36,18 @@ const SEARCH_QUERIES = [
   "އެޕްލިކޭޝަން",
   "އެޕްލިކޭސަން",
 ];
+
+// Rotates through SEARCH_QUERIES by wall-clock time rather than persisted
+// state, so it stays correct even if runs are skipped or retried - every
+// ROTATION_MS window deterministically maps to the same keyword.
+// 12 queries * 10 minutes = full coverage every 2 hours, matching the
+// "*/10 * * * *" schedule.
+const ROTATION_MS = 10 * 60 * 1000;
+
+function currentSearchQuery() {
+  const index = Math.floor(Date.now() / ROTATION_MS) % SEARCH_QUERIES.length;
+  return SEARCH_QUERIES[index];
+}
 
 // The site's own job-category filter already isolates IT vacancies exactly,
 // so this one is a near-zero-false-positive source.
@@ -72,7 +93,7 @@ function parseListing(html, source) {
 // This is just a safety net for a genuinely hung socket - the real ceiling
 // on total batch time is GLOBAL_DEADLINE_MS below, which is what actually
 // needs to stay under Netlify's scheduled-invocation limit.
-const REQUEST_TIMEOUT_MS = 14_000;
+const REQUEST_TIMEOUT_MS = 12_000;
 
 async function fetchListing(url, source) {
   const controller = new AbortController();
@@ -92,23 +113,23 @@ async function fetchListing(url, source) {
   }
 }
 
-// The site's response time under concurrent load is highly variable (a
-// dozen-plus queries have taken anywhere from ~6s to ~14s tail latency in
-// testing, seemingly load-dependent on their end) - too unpredictable to
-// budget for with a fixed per-request timeout alone. So this run also has a
-// hard deadline: after GLOBAL_DEADLINE_MS we stop waiting and go with
-// whatever queries have finished so far. A query that misses this run's
-// window gets retried next run - nothing is marked "seen" until it's
-// actually fetched, so no post can be silently skipped, only delayed.
-const GLOBAL_DEADLINE_MS = 12_000;
+// The site's response time under concurrent load is highly variable
+// (has ranged from ~3s to ~14s tail latency in testing, seemingly
+// load-dependent on their end) - too unpredictable to budget for with a
+// fixed per-request timeout alone. So this run also has a hard deadline:
+// after GLOBAL_DEADLINE_MS we stop waiting and go with whatever queries
+// have finished so far. A query that misses this run's window gets
+// retried next run - nothing is marked "seen" until it's actually
+// fetched, so no post can be silently skipped, only delayed.
+const GLOBAL_DEADLINE_MS = 9_000;
 
 export async function fetchScrapedPosts() {
   const requests = [
     { url: IT_JOB_CATEGORY_URL, source: "job" },
-    ...SEARCH_QUERIES.map((q) => ({
-      url: `${BASE_URL}/iulaan?q=${encodeURIComponent(q)}&open-only=1`,
+    {
+      url: `${BASE_URL}/iulaan?q=${encodeURIComponent(currentSearchQuery())}&open-only=1`,
       source: "notice",
-    })),
+    },
   ];
 
   const byId = new Map();

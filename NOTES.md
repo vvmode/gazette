@@ -214,21 +214,31 @@ compounding causes, both fixed:
    latency for the same batch of requests ranged from ~6s to ~14s across
    different attempts a few minutes apart, so no fixed per-request timeout
    or concurrency count could be reliably tuned against it.
-   `fetchScrapedPosts` (`src/scraper.js`) now races the whole batch against a
-   `GLOBAL_DEADLINE_MS` (8s) instead of just an individual per-request
-   timeout (12s, now just a safety net for a genuinely hung socket) - once
-   the deadline passes, it returns whatever queries have completed so far
-   rather than waiting for stragglers. A query that misses this run's window
-   just gets retried on the next run: nothing is marked "seen" in Postgres
-   until it's actually fetched, so no post can be silently skipped, only
-   delayed by up to an hour. Also switched `sendTelegramMessage` in
-   `src/telegram.js` to send to all recipients concurrently instead of
-   sequentially, shaving another ~2s off runs with multiple matches/
-   recipients.
 
-Measured locally: cold Postgres (Neon) connection ~2.85s, one Telegram send
-~2s, scrape now bounded at 8s - worst case total is comfortably under the
-~15s ceiling instead of running right up against it.
+Also switched `sendTelegramMessage` in `src/telegram.js` to send to all
+recipients concurrently instead of sequentially.
+
+First attempt at (2) raced the whole ~13-query batch against a single
+`GLOBAL_DEADLINE_MS`, returning whatever had completed so far once it
+passed. This didn't hold up: an 8s deadline turned out too tight to let
+*any* query finish under the site's load, so runs "succeeded" (200) but
+silently found nothing every time; raising it to 12s got real results back
+but pushed total run time to ~14.7s - barely under the ceiling again, one
+slow DB/Telegram round trip away from tipping back into failures.
+
+**Current approach**: don't shrink the deadline, shrink the batch.
+`src/scraper.js` now searches only **one keyword per run** (plus the
+job-category URL, which always runs) - `currentSearchQuery()` picks it by
+rotating through `SEARCH_QUERIES` on a wall-clock `ROTATION_MS` (10 min)
+window, so which keyword runs is deterministic from `Date.now()` alone, no
+persisted rotation state needed, and it stays correct even if a run is
+skipped or retried. `netlify/functions/gazette-watch.js` schedule changed
+from `@hourly` to `*/10 * * * *` to match: 12 keywords * 10 minutes = full
+keyword coverage every 2 hours. Each run now only ever fires 2 concurrent
+requests total, comfortably inside `GLOBAL_DEADLINE_MS` (9s) with room to
+spare - a missed/slow keyword just gets retried on its next 2-hour turn,
+and (as before) nothing is marked "seen" in Postgres until actually
+fetched, so no post is silently skipped, only delayed.
 
 Was already seeded from local runs against the same shared Postgres table
 before going live, so the first real cloud invocation correctly reported
