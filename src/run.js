@@ -1,6 +1,4 @@
-import { fetchLatestIulaan } from "./gazetteClient.js";
 import { fetchScrapedPosts } from "./scraper.js";
-import { isItRelated } from "./filter.js";
 import { filterUnseen, markSeen } from "./store.js";
 import { sendTelegramMessage } from "./telegram.js";
 
@@ -26,23 +24,19 @@ function formatMessage(post) {
   return `${kind} [${typeLabel}]\n${title}\n${link}`;
 }
 
-// Prefer the official API. It has been returning 500 on every data endpoint
-// (server-side issue, not fixable here), so fall back to scraping the public
-// website directly. The scraper's own IT-category/keyword URLs already do
-// the relevance filtering, so its results skip the keyword filter below.
+// The official API has 500'd on every data endpoint in every test since this
+// project started (server-side bug, not fixable here) - calling it first
+// just adds a guaranteed-failed OAuth+request round trip to every run's
+// latency, which is what pushed scheduled invocations over Netlify's ~15s
+// ceiling. Go straight to the scraper; see NOTES.md if the API ever gets
+// fixed and this is worth revisiting.
 async function getPosts() {
-  try {
-    const posts = await fetchLatestIulaan();
-    return { source: "api", posts, preFiltered: false };
-  } catch (err) {
-    console.warn("Gazette API unavailable, falling back to website scrape:", err.message);
-    const posts = await fetchScrapedPosts();
-    return { source: "scrape", posts, preFiltered: true };
-  }
+  const posts = await fetchScrapedPosts();
+  return { source: "scrape", posts };
 }
 
 export async function run({ seed = false } = {}) {
-  const { source, posts, preFiltered } = await getPosts();
+  const { source, posts } = await getPosts();
   const unseen = await filterUnseen(posts);
 
   // Mark everything fetched as seen, whether or not it matched, so we never
@@ -55,19 +49,17 @@ export async function run({ seed = false } = {}) {
     return { source, total: posts.length, notified: 0, message };
   }
 
-  const matches = preFiltered ? unseen : unseen.filter(isItRelated);
-
-  if (matches.length === 0) {
-    const message = `[${source}] No new IT-related posts (checked ${unseen.length} new of ${posts.length} total).`;
+  if (unseen.length === 0) {
+    const message = `[${source}] No new IT-related posts (checked 0 new of ${posts.length} total).`;
     console.log(message);
     return { source, total: posts.length, notified: 0, message };
   }
 
-  console.log(`[${source}] Found ${matches.length} new IT-related post(s). Notifying...`);
+  console.log(`[${source}] Found ${unseen.length} new IT-related post(s). Notifying...`);
 
-  for (const post of matches) {
+  for (const post of unseen) {
     await sendTelegramMessage(formatMessage(post));
   }
 
-  return { source, total: posts.length, notified: matches.length };
+  return { source, total: posts.length, notified: unseen.length };
 }

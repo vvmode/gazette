@@ -32,7 +32,5 @@ export async function sendTelegramMessage(text) {
     throw new Error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set in .env");
   }
 
-  for (const chatId of chatIds) {
-    await sendToChat(token, chatId, text);
-  }
+  await Promise.all(chatIds.map((chatId) => sendToChat(token, chatId, text)));
 }

@@ -193,11 +193,42 @@ invocation (visible in the Functions log as long-running, ~15-40s requests
 that never returned in time). Cause: `src/scraper.js` was firing its ~13
 requests **sequentially** with a 500ms politeness delay between each,
 totaling 20-30+ seconds — too slow for Netlify's function gateway. Fixed by
-running them concurrently with `Promise.all` (see `fetchScrapedPosts` in
-`src/scraper.js`), which cut total run time to ~12-16s. Verified working via
-manual invoke: `curl https://gazettemv.netlify.app/.netlify/functions/gazette-watch`
-returns `200` with a JSON summary (`{source, total, notified, message}`) in
-about 15s.
+running them concurrently with `Promise.all`, which cut total run time to
+~12-16s.
+
+That fix wasn't enough on its own — after it shipped, the Functions log
+still showed a ~38.67% error rate, almost all `499`s at a very consistent
+~14970-14989ms, specifically on the scheduler's own `POST`-triggered
+invocations (manual `GET` invocations succeeded even at 15-16.5s). Two
+compounding causes, both fixed:
+
+1. `getPosts()` in `src/run.js` was still trying the official API first on
+   every run (OAuth token fetch + a guaranteed-500 request) before falling
+   back to the scraper - pure wasted latency for an API that has 500'd on
+   every single test since this project started. Removed; `run.js` now
+   scrapes directly. (`src/gazetteClient.js` and `src/filter.js` are kept
+   around unused, in case the API ever gets fixed and this is worth
+   revisiting - see the "Gazette API" section above.)
+2. The Gazette site's response time under ~13-way concurrent load turned out
+   to be highly variable and load-dependent on their end - measured tail
+   latency for the same batch of requests ranged from ~6s to ~14s across
+   different attempts a few minutes apart, so no fixed per-request timeout
+   or concurrency count could be reliably tuned against it.
+   `fetchScrapedPosts` (`src/scraper.js`) now races the whole batch against a
+   `GLOBAL_DEADLINE_MS` (8s) instead of just an individual per-request
+   timeout (12s, now just a safety net for a genuinely hung socket) - once
+   the deadline passes, it returns whatever queries have completed so far
+   rather than waiting for stragglers. A query that misses this run's window
+   just gets retried on the next run: nothing is marked "seen" in Postgres
+   until it's actually fetched, so no post can be silently skipped, only
+   delayed by up to an hour. Also switched `sendTelegramMessage` in
+   `src/telegram.js` to send to all recipients concurrently instead of
+   sequentially, shaving another ~2s off runs with multiple matches/
+   recipients.
+
+Measured locally: cold Postgres (Neon) connection ~2.85s, one Telegram send
+~2s, scrape now bounded at 8s - worst case total is comfortably under the
+~15s ceiling instead of running right up against it.
 
 Was already seeded from local runs against the same shared Postgres table
 before going live, so the first real cloud invocation correctly reported

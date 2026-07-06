@@ -13,8 +13,10 @@ const SEARCH_QUERIES = [
   // Dhivehi/Thaana equivalents, verified against live results. Skipped
   // "ސިސްޓަމް" (system) - too generic, mostly matches CCTV/plumbing/hardware
   // procurement rather than software.
-  "ސޮފްޓްވެއަރ", // software
-  "ސޮފްޓްވެއަ", // software (shorter spelling; substring of the above, kept for completeness)
+  // "ސޮފްޓްވެއަރ" dropped - it's a superset match of "ސޮފްޓްވެއަ" below (any
+  // title containing the former also contains the latter as a substring), so
+  // searching the shorter form alone already covers both and saves a request.
+  "ސޮފްޓްވެއަ", // software
   "ވެބްސައިޓް", // website (spelling 1)
   "ވެބްސައިޓު", // website (spelling 2, catches different posts than spelling 1)
   "ޕޯޓަލް", // portal
@@ -67,9 +69,14 @@ function parseListing(html, source) {
   return posts;
 }
 
+// This is just a safety net for a genuinely hung socket - the real ceiling
+// on total batch time is GLOBAL_DEADLINE_MS below, which is what actually
+// needs to stay under Netlify's scheduled-invocation limit.
+const REQUEST_TIMEOUT_MS = 12_000;
+
 async function fetchListing(url, source) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
     const res = await fetch(url, {
@@ -85,6 +92,16 @@ async function fetchListing(url, source) {
   }
 }
 
+// The site's response time under concurrent load is highly variable (a
+// dozen-plus queries have taken anywhere from ~6s to ~14s tail latency in
+// testing, seemingly load-dependent on their end) - too unpredictable to
+// budget for with a fixed per-request timeout alone. So this run also has a
+// hard deadline: after GLOBAL_DEADLINE_MS we stop waiting and go with
+// whatever queries have finished so far. A query that misses this run's
+// window gets retried next run - nothing is marked "seen" until it's
+// actually fetched, so no post can be silently skipped, only delayed.
+const GLOBAL_DEADLINE_MS = 8_000;
+
 export async function fetchScrapedPosts() {
   const requests = [
     { url: IT_JOB_CATEGORY_URL, source: "job" },
@@ -94,13 +111,8 @@ export async function fetchScrapedPosts() {
     })),
   ];
 
-  // Run concurrently - sequential requests (even with a small delay between
-  // each) add up past serverless function timeout limits once there are a
-  // dozen-plus queries.
-  const results = await Promise.all(requests.map(({ url, source }) => fetchListing(url, source)));
-
   const byId = new Map();
-  for (const posts of results) {
+  function collect(posts) {
     for (const post of posts) {
       // First source in `requests` order wins the source tag if an id shows
       // up in more than one result set - the job-category URL is first, so
@@ -108,6 +120,14 @@ export async function fetchScrapedPosts() {
       if (!byId.has(post.iulaan_id)) byId.set(post.iulaan_id, post);
     }
   }
+
+  const pending = requests.map(({ url, source }) =>
+    fetchListing(url, source)
+      .then(collect)
+      .catch((err) => console.warn("Scrape query failed:", err.message)),
+  );
+
+  await Promise.race([Promise.allSettled(pending), new Promise((resolve) => setTimeout(resolve, GLOBAL_DEADLINE_MS))]);
 
   return [...byId.values()];
 }
