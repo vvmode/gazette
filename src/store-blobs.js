@@ -2,10 +2,6 @@ import { getStore } from "@netlify/blobs";
 
 const STORE_NAME = "gazette-seen-posts";
 
-function getSeenStore() {
-  return getStore(STORE_NAME);
-}
-
 function idOf(post) {
   return String(post.iulaan_id ?? post.id);
 }
@@ -13,26 +9,31 @@ function idOf(post) {
 export async function filterUnseen(posts) {
   if (posts.length === 0) return [];
   
-  const store = getSeenStore();
-  const seenChecks = await Promise.all(
-    posts.map(async (post) => ({
-      post,
-      seen: await store.get(idOf(post))
-    }))
-  );
+  const store = getStore(STORE_NAME);
   
-  return seenChecks.filter(({ seen }) => !seen).map(({ post }) => post);
+  // Check each post individually
+  const unseenPosts = [];
+  for (const post of posts) {
+    const id = idOf(post);
+    const exists = await store.get(id);
+    if (!exists) {
+      unseenPosts.push(post);
+    }
+  }
+  
+  return unseenPosts;
 }
 
 export async function markSeen(posts) {
   if (posts.length === 0) return;
   
-  const store = getSeenStore();
-  await Promise.all(
-    posts.map((post) => 
-      store.set(idOf(post), new Date().toISOString())
-    )
-  );
+  const store = getStore(STORE_NAME);
+  
+  // Set each post individually with proper error handling
+  for (const post of posts) {
+    const id = idOf(post);
+    await store.set(id, new Date().toISOString());
+  }
 }
 
 export async function closeStore() {
