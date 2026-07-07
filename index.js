@@ -1,7 +1,7 @@
 process.loadEnvFile(".env");
 
 import { run } from "./src/run.js";
-import { closeStore } from "./src/store.js";
+import { closeStore } from "./src/store-blobs.js";
 
 const isSeedRun = process.argv.includes("--seed");
 

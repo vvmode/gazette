@@ -1,6 +1,6 @@
 import { schedule } from "@netlify/functions";
 import { run } from "../../src/run.js";
-import { closeStore } from "../../src/store.js";
+import { closeStore } from "../../src/store-blobs.js";
 
 // Every 10 minutes, not hourly - src/scraper.js rotates through one search
 // keyword per run by wall-clock time (12 keywords * 10 minutes = full
