@@ -1,5 +1,5 @@
 import { fetchScrapedPosts } from "./scraper.js";
-import { filterUnseen, markSeen } from "./store-blobs.js";
+import { filterUnseen, markSeen } from "./store.js";
 import { sendTelegramMessage } from "./telegram.js";
 
 // Announcement type slugs -> display label. "masakkaiy" (works) and "beelan"
